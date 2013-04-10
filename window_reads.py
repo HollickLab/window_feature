@@ -97,7 +97,7 @@ def getChromosomes(f):
             tags = {}
             for p in range(11,len(parts)):
                 tags[parts[p][0:2]] = 0
-            if args.multireads:
+            if args.normalize:
                 if "NH" not in tags:
                     sys.exit("Missing NH:i:00 tags required for the --multireads option.")
             if args.abundance:
@@ -153,7 +153,7 @@ parser.add_argument("-s","--step",
 					default = 10000, 
 					metavar = 'N',
 					type    = int)
-parser.add_argument("-m","--multireads", 
+parser.add_argument("-n","--normalize", 
 					help    = "normalize multi-reads as fractional hits per alignment", 
 					action  = 'store_true')
 parser.add_argument("-a","--abundance", 
@@ -236,27 +236,55 @@ while True:
         
             r_start = int(parts[3])
             r_end = r_start + r_length - 1
-        
+            
+            # deal with abundance and normalization
+            if args.abundance:
+                for i in range(len(parts)-1,-1,-1):
+                    if parts[i][0:2] == "NA":
+                        na_parts = parts[i].split(":")
+                        na = int(na_parts[-1])
+                        break
+            else:
+                na = 1
+            
+            if args.normalize:
+                for i in range(len(parts)-1,-1,-1):
+                    if parts[i][0:2] == "NH":
+                        nh_parts = parts[i].split(":")
+                        nh = float(nh_parts[-1])
+                        break
+            else: 
+                nh = 1
+             
             # must make step a float in order for the math to work
             bin_s = int(math.ceil(r_start / float(step))) - 1
             bin_e = int(math.ceil(r_end / float(step))) - 1
         
             if bin_s == bin_e:
-                steps[r_chromosome][bin_s][(r_length - args.sizemin)][strand] += r_length
+                steps[r_chromosome][bin_s][(r_length - args.sizemin)][strand] += ((r_length * na) / nh)
             else:
                 # add length in bin_s
-                steps[r_chromosome][bin_s][(r_length - args.sizemin)][strand] += int((bin_s + 1) * step) - r_start + 1
-                steps[r_chromosome][bin_e][(r_length - args.sizemin)][strand] += r_end - int(bin_e * step)
+                steps[r_chromosome][bin_s][(r_length - args.sizemin)][strand] += (((int((bin_s + 1) * step) - r_start + 1) * na) / nh)
+                steps[r_chromosome][bin_e][(r_length - args.sizemin)][strand] += (((r_end - int(bin_e * step)) * na ) / nh)
             
                 # if more than two bins are spanned
                 full_bins = bin_e - bin_s - 1
 
                 for b in range(1,full_bins + 1):
-                    steps[r_chromosome][bin_s + b][(r_length - args.sizemin)][strand] += step 
+                    steps[r_chromosome][bin_s + b][(r_length - args.sizemin)][strand] += ((step * na) / nh) 
 
 inf.close()
 
 # define windows and group bins into windows
+header = "Chromosome\tWindow"
+if args.poolstrands:
+    for d in range(args.sizemin,args.sizemax +1):
+        header += "\t" + str(d)
+else:
+    for d in range(args.sizemin, args.sizemax +1):
+        header += "\t" + str(d) + "W" + "\t" + str(d) + "C"
+outf.write(header + "\n")
+
 windows = {}
 window_count = int(math.ceil((chromosomes[c] - window) / float(step))) + 1
 for c in chromosomes.keys():
@@ -269,18 +297,15 @@ for c in chromosomes.keys():
         for s in range(int(window / step)):
             for l in range(len(read_size)):
                 for x in range(strand):
-                    windows[c][w][l][x] += steps[c][s][l][x]
+                    # w+s gives bin to use, w = # bins before we start counting, s = bin in current window 
+                    windows[c][w][l][x] += steps[c][w+s][l][x]
 
     for w in range(window_count):
-        print "Window ", w, ":\t", windows[c][w]
-            
-        
-
-
-
-
-
-
+        output = str(c) + "\t" + str(w)
+        for l in range(len(read_size)):
+            for x in range(strand):
+                output += "\t" + str(windows[c][w][l][x])
+        outf.write(output + "\n")
 
 outf.close()
 inf.close()
