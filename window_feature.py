@@ -16,11 +16,24 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 '''
 	
-import sys
+import sys, math, array
 import argparse		# to parse the command line arguments
-import math
-import array
 import datetime     # to add dates to standard output names
+
+PROGRAM = "window_feature.py"
+VERSION = "0.1.1"
+UPDATED = "130430 JRB"
+
+# RAM constants in bytes (for chunk_sizes)
+ONEGB = 1073741824
+ONEMB = 1048576
+ONEKB = 1024
+
+# Line constant = # of lines to chunk per output
+# constant amounts for standard computer (16GB RAM iMac)
+# update below if --highRAM option envoked
+LINE = 10000
+USERAM = ONEGB
 
 #****** Custom classes for error handling ******
 class Error(Exception):
@@ -118,6 +131,31 @@ def getChromosomes(f):
     f.seek(0) # restart file at first line
     return c
 
+
+def read_chunk(file_obj,chunk_size):
+    '''Read in file by chunk_size chunks returning one line at a time.'''
+    chunk_num = 1
+    sys.stdout.write(".")
+    sys.stdout.flush()
+    # get first chunk
+    chunk = file_obj.read(chunk_size)
+    # continue looping until a chunk is just EOF (empty line)
+    while chunk:
+        chunk_num += 1
+        chunk_list = chunk.split("\n")
+        # yield all but last, potentially incomplete line
+        for c in chunk_list[:-1]:
+            yield c
+        sys.stdout.write(".")
+        sys.stdout.flush()
+        if (chunk_num % 100) == 0:
+            sys.stdout.write(" {}\n".format(chunk_num))
+            sys.stdout.flush()
+        # add incomplete line to beginning of next chunk read
+        chunk = chunk_list[-1] + file_obj.read(chunk_size)
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
 def getLength(cigar):
     '''Parse out the length of the read from the CIGAR notation of its alignment.
     
@@ -134,60 +172,58 @@ def getLength(cigar):
                 count += int(number)
             number = 0
     return count
-         
-        
-        
-#****** End Custom functions ******
 
+def get_arguments(program, version, update):
+    date = datetime.datetime.now().strftime('%y%m%d-%H%M%S')
+    
+    parser = argparse.ArgumentParser(description='''Count reads per window and output results to a tab-delimited file.''')
 
-#****** Parse command line arguments with argparse ******
-# date for default output in format YYMMDD-HHMMSS (date-time)
-date = datetime.datetime.now().strftime('%y%m%d-%H%M%S')
+    parser.add_argument("-v","--version", 
+	    				action  = 'version', 
+		    			version = "{} {}\tUpdated {}".format(program, version, update))
+    parser.add_argument("sam_file", 
+	    				help    = "input alignment file in SAM format")
+    parser.add_argument("-o", "--output", 
+	    				help    = "output file name",
+		    			default = date + "_windows.csv")
+    parser.add_argument("-w","--window", 
+	    				help    = "define window-size in bases (default = 1,000,000)", 
+		    			default = 1000000, 
+			    		metavar = 'N',
+				    	type    = int)
+    parser.add_argument("-s","--step", 
+	    				help    = "define step-size for sliding window in bases (default = 10,000)", 
+		    			default = 10000, 
+			    		metavar = 'N',
+				    	type    = int)
+    parser.add_argument("-n","--normalize", 
+	    				help    = "normalize multi-reads as fractional hits per alignment", 
+		    			action  = 'store_true')
+    parser.add_argument("-a","--abundance", 
+	    				help    = "calculate read abundance from SAM options", 
+		    			action  = 'store_true')
+    parser.add_argument("--sizemin", 
+                        help    = "Minimum size read to tally, default = 20",
+                        default = 20,
+                        type    = int,
+                        metavar = 'N')
+    parser.add_argument("--sizemax",
+                        help    = "Maximum size read to tally, default = 25",
+                        default = 25,
+                        type    = int,
+                        metavar = 'N')
+    parser.add_argument("--poolstrands",
+                        help    = "Pool tallies on both strands, default = false",
+                        action  = 'store_true')
+    
+    return parser.parse_args()
 
-parser = argparse.ArgumentParser(description='''Count reads per window and output results to a tab-delimited file.''')
-
-parser.add_argument("-v","--version", 
-					action  = 'version', 
-					version = '%(prog)s 0.1 Updated 130319 JRB')
-parser.add_argument("sam_file", 
-					help    = "input alignment file in SAM format")
-parser.add_argument("-o", "--output", 
-					help    = "output file name",
-					default = date + "_windows.csv")
-parser.add_argument("-w","--window", 
-					help    = "define window-size in bases (default = 1,000,000)", 
-					default = 1000000, 
-					metavar = 'N',
-					type    = int)
-parser.add_argument("-s","--step", 
-					help    = "define step-size for sliding window in bases (default = 10,000)", 
-					default = 10000, 
-					metavar = 'N',
-					type    = int)
-parser.add_argument("-n","--normalize", 
-					help    = "normalize multi-reads as fractional hits per alignment", 
-					action  = 'store_true')
-parser.add_argument("-a","--abundance", 
-					help    = "calculate read abundance from SAM options", 
-					action  = 'store_true')
-parser.add_argument("--sizemin", 
-                    help    = "Minimum size read to tally, default = 20",
-                    default = 20,
-                    type    = int,
-                    metavar = 'N')
-parser.add_argument("--sizemax",
-                    help    = "Maximum size read to tally, default = 25",
-                    default = 25,
-                    type    = int,
-                    metavar = 'N')
-parser.add_argument("--poolstrands",
-                    help    = "Pool tallies on both strands, default = false",
-                    action  = 'store_true')
-args = parser.parse_args()
-
-#****** End Parse command line arguments with argparse ******
 
 #****** Validate user input ******
+starttime = datetime.datetime.now()
+print "Start program: {}".format(starttime.strftime('%H:%M:%S'))
+
+args = get_arguments(PROGRAM, VERSION, UPDATED)
 
 # Make sure the input file is a valid file
 try:
@@ -208,6 +244,7 @@ else:
     sys.exit("{} output file already exists.".format(args.output))
 
 # define dictionary of chromosome keys and length values from SAM file
+print "Load chromosome info from {}: {}".format(args.sam_file, datetime.datetime.now().strftime('%H:%M:%S'))
 chromosomes = getChromosomes(inf) 
 
 # Make sure step is a factor of window and both are non-zero integers
@@ -220,6 +257,7 @@ for r in range(args.sizemin,args.sizemax + 1):
     read_size[r] = 1
 
 # initialize steps
+print "Initializing step bins: {}".format(datetime.datetime.now().strftime('%H:%M:%S'))
 steps = {}
 
 for c in chromosomes.keys():
@@ -229,13 +267,16 @@ for c in chromosomes.keys():
     steps[c] = [[[0 for s in range(strand)] for l in range(len(read_size))] for b in range(int(math.ceil(chromosomes[c] / float(step))))]
         
 # start looping through the file
-while True:
-    line = inf.readline().strip()
-    if len(line) == 0: break # EOF
-    
+print "Starting to tally alignments into bins: {}".format(datetime.datetime.now().strftime('%H:%M:%S'))
+print "Each . represents {} lines of the samfile being read and processed.".format(ONEMB)
+
+for line in read_chunk(inf, ONEMB):
+    line = line.strip()
+        
     parts = line.split("\t")
     
-    if line[0] != "@" and int(parts[1]) != 4:
+    # only process non-comment, mapping alignments
+    if len(line) != 0 and line[0] != "@" and int(parts[1]) != 4:
         r_length = getLength(parts[5])
         if r_length in read_size:
         
@@ -250,7 +291,7 @@ while True:
             
             # deal with abundance and normalization
             if args.abundance:
-                for i in range(len(parts)-1,-1,-1):
+                for i in range(len(parts)-1,-1,-1): # loop backwards
                     if parts[i][0:2] == "NA":
                         na_parts = parts[i].split(":")
                         na = int(na_parts[-1])
@@ -287,6 +328,7 @@ while True:
 inf.close()
 
 # define windows and group bins into windows
+print "Now combining bins into Windows: {}".format(datetime.datetime.now().strftime('%H:%M:%S'))
 header = "Chromosome\tWindow"
 if args.poolstrands:
     for d in range(args.sizemin,args.sizemax +1):
@@ -320,3 +362,11 @@ for c in chromosomes.keys():
 
 outf.close()
 inf.close()
+endtime = datetime.datetime.now()
+elapsed = endtime - starttime
+e_seconds = elapsed.total_seconds()
+e_hours = int(e_seconds / 3600)
+e_minutes = int( (e_seconds - (e_hours * 3600)) / 60)
+e_seconds = (e_seconds - (e_hours * 3600) - (e_minutes * 60))
+print "{} run finished: {}".format(PROGRAM, endtime.strftime('%H:%M:%S'))
+print "Total runtime: {} hours {} minutes {} seconds".format(e_hours, e_minutes, e_seconds)
