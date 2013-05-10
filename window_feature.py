@@ -19,20 +19,21 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 import sys, math, array
 import argparse		# to parse the command line arguments
 import datetime     # to add dates to standard output names
+import subprocess
 
 PROGRAM = "window_feature.py"
 VERSION = "0.1.1"
-UPDATED = "130430 JRB"
+UPDATED = "130510 JRB"
 
 # RAM constants in bytes (for chunk_sizes)
-ONEGB = 1073741824
-ONEMB = 1048576
+ONEGB = (1024 * 1024 * 1024)
+ONEMB = (1024 * 1024)
 ONEKB = 1024
 
 # Line constant = # of lines to chunk per output
 # constant amounts for standard computer (16GB RAM iMac)
 # update below if --highRAM option envoked
-LINE = 10000
+LINE = (1000 * 10)
 USERAM = ONEGB
 
 #****** Custom classes for error handling ******
@@ -67,8 +68,8 @@ def getInput(exception):
 def verifyWS(w,s):
     '''Verify user inputted window (w) and step (s) values.
     
-    They must be non-zero integers, and the window should be evenly divisible
-    by the step size.'''
+    They must be non-zero integers, and the window should be evenly 
+    divisible by the step size.'''
 
     if w == 0 or s == 0 or w % s !=0:
         # Print a specific message to the user
@@ -181,8 +182,12 @@ def get_arguments(program, version, update):
     parser.add_argument("-v","--version", 
 	    				action  = 'version', 
 		    			version = "{} {}\tUpdated {}".format(program, version, update))
-    parser.add_argument("sam_file", 
-	    				help    = "input alignment file in SAM format")
+    parser.add_argument("--sam",
+                        help    = "input alignment file in SAM format",
+                        metavar = 'FILE')
+    parser.add_argument("--bam",
+                        help    = "input alignment file in BAM format",
+                        metavar = 'FILE')
     parser.add_argument("-o", "--output", 
 	    				help    = "output file name",
 		    			default = date + "_windows.csv")
@@ -218,6 +223,79 @@ def get_arguments(program, version, update):
     
     return parser.parse_args()
 
+def header(filename):
+    '''Read in header with samtools view -H and return chromosome info
+
+    Later use to create chromosome objects, for now just return a dictionary of chromosome names + lengths.'''
+
+    if filename[-3:] == "sam":
+        headerlines = subprocess.check_output(["samtools","view","-H","-S",filename], stderr=subprocess.PIPE).split("\n") # stderr arg hides stderr from user
+    elif filename[-3:] == "bam":
+        headerlines = subprocess.check_output(["samtools","view","-H",filename], stderr=subprocess.PIPE).split("\n")
+    else:
+        sys.exit("{} is not a SAM or BAM file".format(filename))
+
+    # Later implement function checking using the stderr PIPE output
+    
+    chrs = {}
+
+    for l in headerlines:
+        if l[0:3] == "@SQ":
+            # chromosome line
+            parts = l.split("\t")
+            # first 3 chars are the label (SN: or LN:)
+            yield (parts[1][3:], parts[2][3:])
+
+def bam_chunk(filename, chunksize, chromosomes):
+    '''Parse through a bam file in chunks and return line-by-line. 
+    
+    Importantly, chunks are measured in nucleotides!'''
+    
+    checkIndexBam(filename)
+    
+    for c in sorted(chromosomes.keys()):
+        start = 1 # because sam file is in 1-based
+
+        while start < int(chromosomes[c]):
+            # loop through entire chromosome
+            # Status tracker 
+            sys.stdout.write(".")
+            if ((start + chunksize) / chunksize) % 100 == 0:
+                sys.stdout.write("{} chunks".format(start / chunksize))
+            sys.stdout.flush()
+            #print "{}:{}-{} group:".format(c, start, start + chunksize - 1)
+            lines = subprocess.check_output(["samtools", "view", filename, "{}:{}-{}".format(c, start, start + chunksize - 1)]).split("\n")
+            for l in lines:
+                if len(l) > 0:
+                    sam = l.split("\t")
+                    #sys.stdout.write(sam[0])
+                    # only return lines that START in the current chunk
+                    if int(sam[3]) >= start:
+                        #sys.stdout.write(": PASSES - {}".format(sam[3]))
+                        yield sam
+                    #else: sys.stdout.write(": FAILED - {}\n".format(sam[3]))
+                    #sys.stdout.flush()
+            # loop start
+            start += chunksize
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+def checkIndexBam(filename):
+    '''Confirm that file is in the bam format and has an index file.'''
+    
+    try:
+        subprocess.check_output(["samtools", "view", "-H", filename], stderr=subprocess.STDOUT)
+    except subprocess.CalledProcessError:
+        sys.exit("{} is not in a recognizable bam format.".format(filename))
+
+    try:
+        subprocess.check_output(["samtools", "view", filename, "Chr1:100-200"], stderr=subprocess.STDOUT)
+    except subprocess.CalledProcessError:
+        sys.exit("Could not find an index (.bai) file for {}.".format(filename))
+
+    return True
+
+
 
 #****** Validate user input ******
 starttime = datetime.datetime.now()
@@ -226,8 +304,15 @@ print "Start program: {}".format(starttime.strftime('%H:%M:%S'))
 args = get_arguments(PROGRAM, VERSION, UPDATED)
 
 # Make sure the input file is a valid file
+if args.sam:
+    infile = args.sam
+elif args.bam:
+    infile = args.bam
+else:
+    sys.exit("You must include an input file (SAM or BAM).")
+
 try:
-    inf = open(args.sam_file)
+    inf = open(infile)
 except IOError as e:
     sys.exit("{} is not an existing file or directory.".format(getInput(e)))
 
@@ -244,8 +329,10 @@ else:
     sys.exit("{} output file already exists.".format(args.output))
 
 # define dictionary of chromosome keys and length values from SAM file
-print "Load chromosome info from {}: {}".format(args.sam_file, datetime.datetime.now().strftime('%H:%M:%S'))
-chromosomes = getChromosomes(inf) 
+print "Load chromosome info from {}: {}".format(infile, datetime.datetime.now().strftime('%H:%M:%S'))
+chromosomes = {}
+for c in header(infile):  # works for both SAM and BAM files
+    chromosomes[c[0]] = int(c[1])
 
 # Make sure step is a factor of window and both are non-zero integers
 (window, step) = verifyWS(args.window, args.step)
@@ -270,16 +357,12 @@ for c in chromosomes.keys():
 print "Starting to tally alignments into bins: {}".format(datetime.datetime.now().strftime('%H:%M:%S'))
 print "Each . represents {} lines of the samfile being read and processed.".format(ONEMB)
 
-for line in read_chunk(inf, ONEMB):
-    line = line.strip()
-        
-    parts = line.split("\t")
-    
-    # only process non-comment, mapping alignments
-    if len(line) != 0 and line[0] != "@" and int(parts[1]) != 4:
+if args.bam:
+    for parts in bam_chunk(infile, ONEMB, chromosomes):
+        # add sam line to window counts
         r_length = getLength(parts[5])
         if r_length in read_size:
-        
+            
             r_chromosome = parts[2]
             # determine strandedness
             strand = 0
@@ -324,6 +407,63 @@ for line in read_chunk(inf, ONEMB):
 
                 for b in range(1,full_bins + 1):
                     steps[r_chromosome][bin_s + b][(r_length - args.sizemin)][strand] += ((step * na) / nh) 
+      
+elif args.sam:
+    for line in read_chunk(inf, ONEMB):
+        line = line.strip()
+                
+        parts = line.split("\t")
+        
+        # only process non-comment, mapping alignments
+        if len(line) != 0 and line[0] != "@" and int(parts[1]) != 4:
+            # add sam line to window counts
+            r_length = getLength(parts[5])
+            if r_length in read_size:
+            
+                r_chromosome = parts[2]
+                # determine strandedness
+                strand = 0
+                if not args.poolstrands and int(parts[1]) == 16:
+                    strand = 1 
+        
+                r_start = int(parts[3])
+                r_end = r_start + r_length - 1
+            
+                # deal with abundance and normalization
+                if args.abundance:
+                    for i in range(len(parts)-1,-1,-1): # loop backwards
+                        if parts[i][0:2] == "NA":
+                            na_parts = parts[i].split(":")
+                            na = int(na_parts[-1])
+                            break
+                else:
+                    na = 1
+            
+                if args.normalize:
+                    for i in range(len(parts)-1,-1,-1):
+                        if parts[i][0:2] == "NH":
+                            nh_parts = parts[i].split(":")
+                            nh = float(nh_parts[-1])
+                            break
+                else: 
+                    nh = 1
+             
+                # must make step a float in order for the math to work
+                bin_s = int(math.ceil(r_start / float(step))) - 1
+                bin_e = int(math.ceil(r_end / float(step))) - 1
+        
+                if bin_s == bin_e:
+                    steps[r_chromosome][bin_s][(r_length - args.sizemin)][strand] += ((r_length * na) / nh)
+                else:
+                    # add length in bin_s
+                    steps[r_chromosome][bin_s][(r_length - args.sizemin)][strand] += (((int((bin_s + 1) * step) - r_start + 1) * na) / nh)
+                    steps[r_chromosome][bin_e][(r_length - args.sizemin)][strand] += (((r_end - int(bin_e * step)) * na ) / nh)
+            
+                    # if more than two bins are spanned
+                    full_bins = bin_e - bin_s - 1
+
+                    for b in range(1,full_bins + 1):
+                        steps[r_chromosome][bin_s + b][(r_length - args.sizemin)][strand] += ((step * na) / nh) 
 
 inf.close()
 
