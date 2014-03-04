@@ -1,6 +1,6 @@
 #!/usr/bin/python
 '''window_features.py uses SAM file alignments to output a table of read counts in sliding windows.
-Copyright (C) 2013 Joy-El Barbour
+Copyright (C) 2013 Joy-El R.B. Talbot
     
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -23,7 +23,7 @@ import subprocess
 
 PROGRAM = "window_feature.py"
 VERSION = "0.1.1"
-UPDATED = "130510 JRB"
+UPDATED = "130510 JRBT"
 
 # RAM constants in bytes (for chunk_sizes)
 ONEGB = (1024 * 1024 * 1024)
