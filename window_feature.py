@@ -16,7 +16,7 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 '''
 	
-import sys, math, array
+import sys, math, array, re
 import argparse		# to parse the command line arguments
 import datetime     # to add dates to standard output names
 import subprocess
@@ -241,10 +241,13 @@ def header(filename):
 
     for l in headerlines:
         if l[0:3] == "@SQ":
-            # chromosome line
-            parts = l.split("\t")
-            # first 3 chars are the label (SN: or LN:)
-            yield (parts[1][3:], parts[2][3:])
+            try:
+                name = re.search('SN:(\S+)',l).group(1)
+                length = int(re.search('LN:(\d+)',l).group(1))
+                yield (name,length)
+            except:
+                raise Error(l, "Could not extract name and length data from this SAM header:\t{}".format(l))
+
 
 def bam_chunk(filename, chunksize, chromosomes):
     '''Parse through a bam file in chunks and return line-by-line. 
@@ -332,7 +335,7 @@ else:
 print "Load chromosome info from {}: {}".format(infile, datetime.datetime.now().strftime('%H:%M:%S'))
 chromosomes = {}
 for c in header(infile):  # works for both SAM and BAM files
-    chromosomes[c[0]] = int(c[1])
+    chromosomes[c[0]] = c[1]
 
 # Make sure step is a factor of window and both are non-zero integers
 (window, step) = verifyWS(args.window, args.step)
